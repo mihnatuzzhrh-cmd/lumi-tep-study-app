@@ -1,0 +1,317 @@
+<script>
+/* LUMI client — Google Apps Script HTML Service (no frontend build needed). */
+(function () {
+  'use strict';
+  const A = document.getElementById('app');
+  const SECTIONS = ['LISTENING', 'STRUCTURE', 'READING'];
+  const SECTION_EMOJI = { LISTENING: '🎧', STRUCTURE: '🧩', READING: '📖' };
+  const state = {
+    screen: 'home', data: null, busy: false, error: null, toast: '',
+    section: 'ALL', category: 'ALL', count: 10, mode: 'practice',
+    quiz: null, index: 0, answers: {}, feedback: {}, startTime: 0,
+    seconds: 0, timerId: null, submitting: false,
+    result: null, showAllReview: false
+  };
+
+  const ICONS = {
+    home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
+    book: '<path d="M12 7c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V6c-3-1-6-1-9 1Zm0 0v14"/>',
+    headphones: '<path d="M3 14v-3a9 9 0 0 1 18 0v3M3 14v5h5v-7H3Zm18 0v5h-5v-7h5Z"/>',
+    layers: '<path d="m12 2 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 17l9 5 9-5"/>',
+    chart: '<path d="M4 19V9m6 10V4m6 15v-7m4 7v-9"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-5 16-5 16 0"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 9h18c0-1-3-2-3-9ZM10 21h4"/>',
+    arrow: '<path d="m5 12 14 0m-6-6 6 6-6 6"/>',
+    back: '<path d="m14 5-7 7 7 7"/>',
+    chevron: '<path d="m9 18 6-6-6-6"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
+    repeat: '<path d="M20 7V3l-4 4m4-4a9 9 0 0 1 1 14M4 17v4l4-4m-4 4A9 9 0 0 1 3 7"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+    spark: '<path d="m12 2 2 7 7 3-7 3-2 7-2-7-7-3 7-3 2-7Z"/>',
+    trophy: '<path d="M7 4h10v6a5 5 0 0 1-10 0V4Zm5 11v5m-5 1h10M7 7H3a5 5 0 0 0 5 5m9-5h4a5 5 0 0 1-5 5"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    star: '<path d="m12 2 3.2 6.5 7.1 1-5.2 5 .9 7.1L12 18.3l-6 3.3.9-7.1-5.2-5 7.1-1Z"/>',
+    lightning: '<path d="m14 2-9 12h7l-2 8 9-12h-7l2-8Z"/>',
+    alert: '<path d="M12 3 2 21h20L12 3Zm0 6v5m0 3v1"/>',
+    close: '<path d="M5 5 19 19M19 5 5 19"/>'
+  };
+  function icon(name, cls) { return '<svg class="icon ' + (cls || '') + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[name] || ICONS.spark) + '</svg>'; }
+  function h(value) { return String(value === undefined || value === null ? '' : value).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function titleCase(v) { return String(v || '').toLowerCase().replace(/\b[a-z]/g, function (m) { return m.toUpperCase(); }); }
+  function n(value) { return Number(value || 0).toLocaleString('id-ID'); }
+  function pct(value) { return Math.max(0,Math.min(100,Number(value)||0)); }
+  function secFormat(s) { s = Math.max(0,Math.floor(s)); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+  function server(name, ...args) {
+    return new Promise(function (resolve, reject) {
+      if (!window.google || !google.script || !google.script.run) {
+        reject(new Error('Buka LUMI melalui URL Web App Google Apps Script. File HTML tidak dapat menjalankan Google Sheets secara langsung.'));
+        return;
+      }
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(function(e) {
+        reject(new Error(e && e.message ? e.message : String(e)));
+      })[name](...args);
+    });
+  }
+  function notify(text) {
+    const x = document.createElement('div'); x.className = 'toast'; x.textContent = text;
+    document.body.appendChild(x); setTimeout(function () { x.remove(); },3500);
+  }
+  function scrollTop() { window.scrollTo({ top: 0, behavior: 'auto' }); }
+  function stopTimer() { if (state.timerId) clearInterval(state.timerId); state.timerId = null; }
+  function startTimer() {
+    stopTimer(); state.startTime = Date.now(); state.seconds = 0;
+    state.timerId = setInterval(function () {
+      if (!state.quiz || state.screen !== 'quiz' || state.submitting) return;
+      state.seconds = Math.floor((Date.now() - state.startTime) / 1000);
+      const el = document.getElementById('quiz-timer');
+      if (el) {
+        const limit = state.quiz.durationLimitSec;
+        el.textContent = secFormat(limit === null ? state.seconds : Math.max(0, limit - state.seconds));
+      }
+      if (state.quiz.durationLimitSec !== null && state.seconds >= state.quiz.durationLimitSec) {
+        stopTimer(); finishQuiz(true);
+      }
+    }, 1000);
+  }
+  function brandHeader() {
+    return '<header class="topbar"><div><div class="brand">LUMI<b>✦</b></div><div class="brand-sub">YOUR TEP STUDY SPACE</div></div>'+
+      '<div class="top-actions"><button class="round-icon" aria-label="Lihat progres" data-action="nav" data-screen="progress">'+icon('chart')+'</button>'+
+      '<button class="round-icon" aria-label="Buka profil" data-action="nav" data-screen="profile">'+icon('user')+'</button></div></header>';
+  }
+  function nav() {
+    if (state.screen === 'quiz') return '';
+    const links = [ ['home','home','Home'], ['practice','layers','Practice'], ['progress','chart','Progress'], ['profile','user','Profile'] ];
+    return '<nav class="nav" aria-label="Menu utama">'+links.map(function (x) {
+      const active = state.screen === x[0] || (state.screen === 'results' && x[0]==='progress');
+      return '<button type="button" class="'+(active?'active':'')+'" data-action="nav" data-screen="'+x[0]+'" aria-current="'+(active?'page':'false')+'">'+icon(x[1])+'<span>'+x[2]+'</span></button>';
+    }).join('')+'</nav>';
+  }
+  function shell(content) {
+    A.innerHTML='<div class="shell">'+(state.screen === 'quiz' ? '' : brandHeader())+
+      '<main class="main">'+content+'</main>'+nav()+'</div>';
+  }
+  function errorPage(message) {
+    A.innerHTML='<div class="shell"><div class="error-screen"><div class="result-trophy">⚠️</div><h1>Belum bisa membuka LUMI</h1><p>'+h(message)+'</p>'+
+      '<button class="primary" data-action="reload">Coba Lagi '+icon('repeat','icon-sm')+'</button><div style="height:14px"></div><div class="notice">Cek nama empat sheet dan jalankan <b>setupLumi</b> di editor Apps Script. Lihat README.md untuk langkah pengaturan.</div></div></div>';
+  }
+  function loading(text) { return '<div class="empty"><div class="loader"></div>'+h(text||'Memuat data belajarmu...')+'</div>'; }
+  function home() {
+    const s = state.data.stats;
+    const xpPercent = Math.round(s.levelXP / s.levelTarget * 100);
+    const badges = s.badges.slice(0,4);
+    while (badges.length < 4) badges.push(null);
+    return '<div class="page-intro"><div class="eyebrow">LET’S MAKE PROGRESS</div><h1>Hi, '+h(state.data.displayName||'Learner')+'! 👋</h1><p>A little progress, every day. You’ve got this!</p></div>'+
+      '<div class="hero"><div class="flare first"></div><div class="flare second"></div><div class="hero-orb"><div class="hero-circle"><strong>'+xpPercent+'%</strong><small>to next level</small></div></div>'+
+      '<div class="hero-top">YOUR STUDY JOURNEY<h2>Level '+n(s.level)+' 👑</h2><div class="xp-caption">'+n(s.levelXP)+' / '+n(s.levelTarget)+' XP</div><div class="hero-track"><span style="width:'+xpPercent+'%"></span></div></div>'+
+      '<div class="hero-bottom"><div class="hero-stat"><span class="emoji">🔥</span><span><b>'+n(s.streak)+'</b><small>Day Streak</small></span></div><div class="hero-stat"><span class="emoji">⚡</span><span><b>'+n(s.xp)+' XP</b><small>Total earned</small></span></div></div></div>'+
+      '<div class="section-head"><h2>Recent Achievements</h2><button class="text-link" data-action="nav" data-screen="progress">View All ›</button></div>'+
+      '<div class="badge-grid">'+badges.map(function (b,i) { return '<div class="badge-tile '+(!b?'badge-empty':'')+'"><div class="badge-icon '+['','gold','purple','blue'][i]+'">'+(b ? badgeEmoji(b.icon) : '🔒')+'</div><span>'+h(b?b.title:'Locked')+'</span></div>'; }).join('')+'</div>'+
+      '<div class="panel weekly" style="margin-top:11px"><div class="split"><div class="split" style="gap:8px">'+icon('target')+'<b style="font-size:12px">Weekly Target</b></div><small class="muted">5 active days</small></div>'+
+      '<div class="split" style="margin:12px 0 7px"><span class="tag">'+s.weeklyDays+' / '+s.weeklyTarget+' hari belajar</span><span class="tag">'+Math.round(pct(s.weeklyDays/s.weeklyTarget*100))+'%</span></div>'+
+      '<div class="progress-track"><div class="fill" style="width:'+pct(s.weeklyDays/s.weeklyTarget*100)+'%"></div></div></div>'+
+      '<div class="section-head"><h2>Section Performance</h2><button class="text-link" data-action="nav" data-screen="progress">Details ›</button></div>'+
+      '<div class="metric-grid">'+SECTIONS.map(function (x) { const val=s.sections[x]; return '<div class="metric-card"><span class="symbol">'+SECTION_EMOJI[x]+'</span><b>'+titleCase(x)+'</b><span class="percent">'+(val.attempts?val.accuracy+'%':'—')+'</span></div>'; }).join('')+'</div>'+
+      '<div style="margin-top:18px"><button class="primary" data-action="quick-practice">▶ &nbsp; Continue Learning '+icon('arrow','icon-sm')+'</button></div>'+
+      '<div style="margin-top:11px;text-align:center;color:#A0A5B7;font-size:10px">'+n(state.data.totals.ALL)+' soal siap dilatih · Data langsung dari Google Sheets</div>';
+  }
+  function categoryOptions() {
+    const available = state.data.categories[state.section] || {};
+    const keys = Object.keys(available).sort();
+    if (state.category !== 'ALL' && keys.indexOf(state.category) === -1) state.category = 'ALL';
+    return '<option value="ALL">Semua kategori ('+Object.values(available).reduce((a,b)=>a+b,0)+')</option>'+keys.map(function (key) {
+      return '<option value="'+h(key)+'" '+(key===state.category?'selected':'')+'>'+h(key)+' ('+available[key]+')</option>';
+    }).join('');
+  }
+  function practice() {
+    const totals=state.data.totals;
+    return '<div class="page-intro"><div class="rocket" aria-hidden="true">🚀</div><div class="eyebrow">CHOOSE YOUR CHALLENGE</div><h1>Time to practice.</h1><p>Pick a section. Level up your English skills!</p></div>'+
+      '<div class="tab-strip">'+['ALL'].concat(SECTIONS).map(function (x) { return '<button class="chip '+(x===state.section?'active':'')+'" data-action="section" data-section="'+x+'">'+(x==='ALL'?'✨ All':SECTION_EMOJI[x]+' '+titleCase(x))+'</button>'; }).join('')+'</div>'+
+      '<div class="panel filter-panel"><div><label class="form-label" for="category">KATEGORI MATERI</label><select id="category" class="form-select" data-change="category">'+categoryOptions()+'</select></div>'+
+      '<div class="form-row"><div><label class="form-label" for="count">JUMLAH SOAL</label><select id="count" class="form-select" data-change="count">'+[5,10,15,20,25,40,50].map(function (c) { return '<option value="'+c+'" '+(state.count===c?'selected':'')+'>'+c+' soal</option>'; }).join('')+'</select></div>'+
+      '<div><label class="form-label" for="mode">MODE LATIHAN</label><select id="mode" class="form-select" data-change="mode"><option value="practice" '+(state.mode==='practice'?'selected':'')+'>Practice · Pembahasan langsung</option><option value="mock" '+(state.mode==='mock'?'selected':'')+'>Mock · Simulasi waktu</option></select></div></div>'+
+      '<div class="notice">✨ Practice: cek jawaban per soal. Mock: pembahasan dan skor muncul di akhir. Batas waktu simulasi <b>1 menit/soal</b>, bukan format resmi TEP.</div>'+
+      '<button class="primary" data-action="start" '+(state.busy?'disabled':'')+'>'+icon('lightning','icon-sm')+' Mulai Latihan '+(state.section==='ALL'?'Campuran':titleCase(state.section))+'</button></div>'+
+      '<div class="section-head"><h2>Explore your subjects</h2><span class="tag">'+n(totals.ALL)+' questions</span></div>'+
+      SECTIONS.map(function (x) {
+        const info={LISTENING:['Understand conversations','headphones','listening'],STRUCTURE:['Master your grammar','layers','structure'],READING:['Read with confidence','book','reading']}[x];
+        return '<div class="panel practice-card"><div class="practice-row"><div class="subject-icon '+info[2]+'">'+icon(info[1])+'</div><div style="flex:1"><h3 style="font-size:14px">'+titleCase(x)+'</h3><div class="muted" style="font-size:11px;margin-top:3px">'+info[0]+'</div></div>'+icon('chevron','icon-sm')+'</div>'+
+          '<div class="practice-meta"><span class="pill">'+n(totals[x])+' Questions</span><span class="pill purple">🎯 Skills Practice</span><span class="pill coral">⚡ +10 XP / correct</span></div>'+
+          '<button class="primary" data-action="start-section" data-section="'+x+'">▶ &nbsp; Start '+titleCase(x)+'</button></div>';
+      }).join('');
+  }
+  function sourceBlock(q) {
+    if (!q.source) return '';
+    const label = q.section==='LISTENING'?'LISTENING TRANSCRIPT':'READING PASSAGE';
+    return '<details class="source-card" open><summary>'+icon('book','icon-sm')+' <span style="flex:1">'+h(label+(q.source.title?' · '+q.source.title:''))+'</span></summary><div class="source-content">'+h(q.source.en)+'</div></details>';
+  }
+  function quiz() {
+    const qs=state.quiz.questions, q=qs[state.index], answer=state.answers[q.id]||'', fb=state.feedback[q.id];
+    const last=state.index===qs.length-1, mock=state.quiz.mode==='mock';
+    const timeRemaining=state.quiz.durationLimitSec===null?state.seconds:Math.max(0,state.quiz.durationLimitSec-state.seconds);
+    return '<div class="quiz-top"><button class="round-icon" data-action="exit-quiz" aria-label="Keluar latihan">'+icon('back')+'</button><span class="quiz-title">'+titleCase(q.section)+' Practice</span><span class="pill">'+(mock?'MOCK TEST':'PRACTICE')+'</span></div>'+
+      '<div class="quiz-progress"><div class="progress-track"><div class="fill" style="width:'+pct((state.index+1)/qs.length*100)+'%"></div></div><span class="count">'+(state.index+1)+' / '+qs.length+'</span></div>'+
+      '<div class="split quiz-meta"><span class="pill">QUESTION '+(state.index+1)+' · '+h(q.category)+'</span><span class="timer">'+icon('clock','icon-sm')+' <span id="quiz-timer">'+secFormat(timeRemaining)+'</span></span></div>'+
+      sourceBlock(q)+'<div class="eyebrow">SELECT THE BEST ANSWER</div><div class="question-text">'+h(q.question)+'</div>'+
+      '<div class="choices">'+q.choices.map(function (opt,i) {
+        const key='ABCD'[i]; const selected=answer===key;
+        const cls=fb?(key===fb.key?'correct':(selected?'wrong':'')):(selected?'selected':'');
+        return '<button type="button" class="choice '+cls+'" data-action="choose" data-choice="'+key+'" '+(fb?'disabled':'')+' aria-pressed="'+selected+'"><span class="choice-letter">'+key+'</span><span>'+h(opt)+'</span></button>';
+      }).join('')+'</div>'+
+      (fb ? '<div class="feedback-panel '+(fb.correct?'':'incorrect')+'"><div class="fb-title">'+(fb.correct?'✅ Correct! You got it!':'💡 Jawaban yang tepat: '+h(fb.key))+'</div>'+
+      (fb.translation?'<p><b>Terjemahan:</b> '+h(fb.translation)+'</p>':'')+
+      (fb.explanation?'<p><b>Pembahasan:</b> '+h(fb.explanation)+'</p>':'')+
+      (fb.sourceTranslation?'<details style="margin-top:11px"><summary class="tag">Lihat terjemahan transkrip/bacaan</summary><p style="white-space:pre-line">'+h(fb.sourceTranslation)+'</p></details>':'')+'</div>' : '')+
+      '<div class="question-actions"><button class="secondary" data-action="prev" '+(state.index===0?'disabled':'')+' aria-label="Soal sebelumnya">'+icon('back')+'</button>'+
+      (!mock && !fb?'<button class="primary" data-action="check" '+(!answer||state.busy?'disabled':'')+'>Check Answer '+icon('check','icon-sm')+'</button>':
+        '<button class="primary" data-action="'+(last?'finish':'next')+'" '+(state.submitting?'disabled':'')+'>'+(last?'Finish & See Results':'Next Question')+' '+icon('arrow','icon-sm')+'</button>')+'</div>'+
+      '<div style="text-align:center;margin-top:11px"><button class="ghost" data-action="exit-quiz">Simpan progres setelah menyelesaikan sesi · Keluar</button></div>';
+  }
+  function badgeEmoji(name){ return ({spark:'✨',flame:'🔥',fire:'🏆',star:'⭐',trophy:'🏅'})[name]||'🌟'; }
+  function result() {
+    const r=state.result,s=r.stats;
+    return '<div class="quiz-top"><button class="round-icon" data-action="nav" data-screen="home" aria-label="Kembali ke beranda">'+icon('back')+'</button><span class="quiz-title">Practice Results</span><span class="pill green">COMPLETED</span></div>'+
+      '<div class="result-trophy">🏆</div><div class="result-heading"><h1>Great Job! 🎉</h1><p>You completed your '+(r.mode==='mock'?'Mock Test':'Practice')+'. Keep shining!</p></div>'+
+      '<div class="result-hero"><div><small>Your Score</small><strong>'+r.correct+' / '+r.total+'</strong><span class="accuracy-pill">✓ '+r.accuracy+'% Accuracy</span></div><div><small>⚡ XP Gained</small><strong class="gain">+'+r.earnedXP+' XP</strong><small>👑 Level '+s.level+'</small><div class="progress-track" style="margin-top:9px;background:#FFFFFF40"><div class="fill" style="width:'+pct(s.levelXP/s.levelTarget*100)+'%"></div></div></div></div>'+
+      '<div class="panel" style="padding:15px;margin-top:15px"><h3 style="font-size:13px">Accuracy by Section</h3>'+SECTIONS.map(function(x){const v=s.sections[x];return '<div class="section-bar"><label>'+SECTION_EMOJI[x]+' '+titleCase(x)+'</label><div class="progress-track"><div class="fill" style="width:'+v.accuracy+'%"></div></div><b>'+(v.attempts?v.accuracy+'%':'—')+'</b></div>';}).join('')+'</div>'+
+      '<div class="section-head"><h2>Badges Earned</h2><button class="text-link" data-action="nav" data-screen="progress">View All ›</button></div>'+
+      '<div class="result-badges">'+(s.badges.length?s.badges.slice(-3).map(function(b){return '<div class="result-badge"><span>'+badgeEmoji(b.icon)+'</span><strong>'+h(b.title)+'</strong></div>';}).join(''):'<div class="notice" style="grid-column:1/-1">Selesaikan beberapa latihan untuk membuka badge pertamamu!</div>')+'</div>'+
+      '<div class="panel" style="padding:14px;margin:16px 0"><div class="split"><div><b>Review your mistakes</b><div class="muted" style="font-size:11px">'+r.feedback.filter(function(f){return !f.correct;}).length+' questions to revisit</div></div><button class="secondary" data-action="open-review">'+icon('arrow','icon-sm')+'</button></div></div>'+
+      '<button class="primary" data-action="retry-wrong">'+icon('repeat','icon-sm')+' Retry Wrong Answers</button><button class="secondary" style="width:100%;margin-top:10px" data-action="nav" data-screen="practice">Explore More Practice</button>';
+  }
+  function review() {
+    const all=state.result.feedback;
+    let relevant=state.showAllReview?all:all.filter(function(q){return !q.correct;});
+    if (!relevant.length) relevant=all;
+    return '<div class="quiz-top"><button class="round-icon" data-action="back-results">'+icon('back')+'</button><span class="quiz-title">Answer Review</span><span class="pill">'+relevant.length+' Questions</span></div>'+
+      '<div class="page-intro"><h1>Learn from every answer.</h1><p>Penjelasan dan terjemahan diambil dari bank soal Google Sheets kamu.</p></div>'+
+      '<div class="tab-strip"><button class="chip '+(!state.showAllReview?'active':'')+'" data-action="review-filter" data-value="wrong">Mistakes</button><button class="chip '+(state.showAllReview?'active':'')+'" data-action="review-filter" data-value="all">All Answers</button></div>'+
+      relevant.map(function(f,i){return '<article class="panel review-card"><div class="split"><span class="pill">'+h(f.section||'QUESTION')+' · '+h(f.category||'')+'</span><span class="pill '+(f.correct?'green':'coral')+'">'+(f.correct?'✓ Correct':'✕ Needs Review')+'</span></div><div class="review-question">'+h(f.question)+'</div>'+
+        '<div class="tag">Jawabanmu: '+(f.answer?h(f.answer)+'. '+h(f.choices['ABCD'.indexOf(f.answer)]):'Belum dijawab')+'</div>'+
+        '<div class="review-key">Kunci: '+h(f.key)+'. '+h(f.choices['ABCD'.indexOf(f.key)]||'')+'</div>'+
+        (f.translation?'<div class="review-note"><b>Terjemahan:</b> '+h(f.translation)+'</div>':'')+
+        (f.explanation?'<div class="review-note"><b>Pembahasan:</b> '+h(f.explanation)+'</div>':'')+
+        (f.sourceTranslation?'<details style="margin-top:12px"><summary class="tag">Terjemahan bacaan/transkrip</summary><div class="review-note">'+h(f.sourceTranslation)+'</div></details>':'')+'</article>';}).join('')+
+      '<button class="primary" data-action="back-results">Back to Results '+icon('arrow','icon-sm')+'</button>';
+  }
+  function progress() {
+    const s=state.data.stats;
+    return '<div class="page-intro"><div class="eyebrow">YOUR LEARNING JOURNEY</div><h1>Look how far you’ve come ✨</h1><p>Every small step is making a difference.</p></div>'+
+      '<div class="hero" style="min-height:159px"><div class="hero-top">YOUR TOTAL EXPERIENCE<h2>'+n(s.xp)+' XP ⚡</h2><div class="xp-caption">Level '+s.level+' · '+n(s.levelXP)+' / '+s.levelTarget+' XP to next level</div><div class="hero-track"><span style="width:'+pct(s.levelXP/s.levelTarget*100)+'%"></span></div></div><div class="hero-orb" style="top:30px"><div class="hero-circle"><strong>'+s.level+'</strong><small>LEVEL</small></div></div></div>'+
+      '<div class="metric-grid" style="margin-top:13px"><div class="metric-card"><b style="font-size:19px">'+n(s.sessions)+'</b><span class="tag">Sessions</span></div><div class="metric-card"><b style="font-size:19px">'+n(s.answered)+'</b><span class="tag">Answered</span></div><div class="metric-card"><b style="font-size:19px">'+s.accuracy+'%</b><span class="tag">Accuracy</span></div></div>'+
+      '<div class="section-head"><h2>Section Performance</h2></div><div class="panel" style="padding:15px">'+SECTIONS.map(function(x){const v=s.sections[x];return '<div class="section-bar"><label>'+SECTION_EMOJI[x]+' '+titleCase(x)+'</label><div class="progress-track"><div class="fill" style="width:'+v.accuracy+'%"></div></div><b>'+(v.attempts?v.accuracy+'%':'—')+'</b></div>';}).join('')+'</div>'+
+      '<div class="section-head"><h2>Achievements</h2><span class="tag">'+s.badges.length+' unlocked</span></div>'+
+      (s.badges.length?'<div class="badge-grid">'+s.badges.map(function(b){return '<div class="badge-tile"><div class="badge-icon">'+badgeEmoji(b.icon)+'</div><span>'+h(b.title)+'</span></div>';}).join('')+'</div>':'<div class="panel empty">🎖️<br/>Badge pertamamu menunggu. Coba selesaikan satu latihan!</div>')+
+      '<div class="section-head"><h2>Mistake Notebook</h2><span class="pill coral">'+s.wrongCount+' to review</span></div>'+
+      '<div class="panel" style="padding:15px"><p class="muted" style="font-size:11px;margin-bottom:12px">Latihan ulang soal yang terakhir kali kamu jawab salah. Jika sudah benar, soal akan keluar dari daftar ini.</p>'+
+      '<button class="primary" data-action="retry-wrong" '+(!s.wrongCount?'disabled':'')+'>'+icon('repeat','icon-sm')+' Retry Wrong Answers</button></div>';
+  }
+  function profile() {
+    const s=state.data.stats;
+    return '<div class="page-intro"><div class="eyebrow">YOUR PERSONAL SPACE</div><h1>My Study Profile</h1><p>Your progress, your pace. Make it yours.</p></div>'+
+      '<div class="panel" style="padding:19px;text-align:center"><div class="profile-bubble">L</div><h2 style="font-size:19px">LUMI Learner</h2><p class="muted" style="font-size:11px;margin-top:7px">Level '+s.level+' · '+n(s.xp)+' XP · 🔥 '+s.streak+' day streak</p></div>'+
+      '<div class="section-head"><h2>Your Study Database</h2></div><div class="panel" style="padding:17px"><div class="split"><b>Total soal aktif</b><b>'+n(state.data.totals.ALL)+'</b></div><div class="line" style="margin:12px 0"></div>'+
+      SECTIONS.map(function(x){return '<div class="split" style="margin-bottom:9px"><span class="tag">'+SECTION_EMOJI[x]+' '+titleCase(x)+'</span><b>'+n(state.data.totals[x])+'</b></div>';}).join('')+
+      '<div class="line" style="margin:12px 0"></div><div class="split"><span class="tag">Teks Listening / Reading</span><b>'+n(state.data.textCount)+'</b></div></div>'+
+      '<div class="notice" style="margin-top:17px">🔐 Progres disimpan di sheet <b>RIWAYAT_BELAJAR</b>. Atur akses deployment ke <b>Only myself</b> agar hanya akunmu yang dapat mengakses data. Soal baru akan otomatis terbaca setelah membuka ulang halaman atau memulai sesi baru.</div>'+
+      '<button class="secondary" style="width:100%;margin-top:15px" data-action="refresh">'+icon('repeat','icon-sm')+' Refresh dari Google Sheets</button>';
+  }
+  function render() {
+    if (state.error) { errorPage(state.error); return; }
+    if (!state.data) { A.innerHTML='<div class="launch-screen"><div class="launch-logo">LUMI<span>✦</span></div><div class="loader"></div><p>Menyiapkan ruang belajarmu...</p></div>'; return; }
+    const content = state.screen==='home'?home():state.screen==='practice'?practice():state.screen==='quiz'?quiz():state.screen==='results'?result():state.screen==='review'?review():state.screen==='progress'?progress():profile();
+    shell((state.busy && state.screen!=='quiz' ? loading('Preparing your practice...') : content));
+  }
+  async function refresh() {
+    try {
+      state.error=null; state.data = await server('getBootstrapData'); render();
+    } catch (e) { state.error=e.message; render(); }
+  }
+  async function toScreen(screen) {
+    if (state.screen==='quiz') {
+      if (!window.confirm('Keluar dari latihan? Jawaban belum disimpan sampai kamu menyelesaikan sesi.')) return;
+      stopTimer(); state.quiz=null;
+    }
+    state.screen=screen;state.busy=false;state.error=null;
+    if (['home','progress','profile'].indexOf(screen)>=0) {
+      try { state.data=await server('getBootstrapData'); } catch(e){notify(e.message);}
+    }
+    render();scrollTop();
+  }
+  async function begin(options) {
+    if (state.busy) return;
+    const section=options && options.section || state.section;
+    const category=options && options.section && options.section!==state.section?'ALL':state.category;
+    const onlyMistakes=!!(options && options.onlyMistakes);
+    state.busy=true;render();
+    try {
+      const quiz = await server('getQuiz', {section:section,category:category,count:state.count,mode:state.mode,onlyMistakes:onlyMistakes});
+      state.quiz=quiz;state.screen='quiz';state.index=0;state.answers={};state.feedback={};state.seconds=0;state.result=null;
+      startTimer();scrollTop();
+    } catch(e){notify(e.message);}
+    finally{state.busy=false;render();}
+  }
+  async function check() {
+    if (!state.quiz || state.busy) return;
+    const q=state.quiz.questions[state.index], answer=state.answers[q.id];
+    if (!answer) {notify('Pilih jawaban dulu, ya!');return;}
+    state.busy=true;render();
+    try { state.feedback[q.id]=await server('checkAnswer',state.quiz.sessionId,q.id,answer); }
+    catch(e){notify(e.message);} finally {state.busy=false;render();}
+  }
+  async function finishQuiz(auto) {
+    if (!state.quiz || state.submitting) return;
+    const missing=state.quiz.questions.filter(function(q){return !state.answers[q.id];}).length;
+    if (!auto && missing && !window.confirm('Masih ada '+missing+' soal kosong. Selesaikan latihan sekarang?')) return;
+    state.submitting=true;stopTimer();render();
+    try {
+      const result=await server('submitQuiz',{
+        sessionId:state.quiz.sessionId,
+        durationSec:state.seconds,
+        answers:state.quiz.questions.map(function(q){return{id:q.id,answer:state.answers[q.id]||''};})
+      });
+      state.result=result;state.data.stats=result.stats;state.screen='results';state.quiz=null;state.showAllReview=false;scrollTop();
+      if (result.accuracy>=80) notify('🎉 Amazing! +'+result.earnedXP+' XP unlocked!');
+      else notify('✨ Selesai! Kamu sudah selangkah lebih maju.');
+    } catch(e) { notify(e.message); if(state.quiz){startTimer();} }
+    finally{state.submitting=false;render();}
+  }
+  async function retryWrong() { state.section='ALL';state.category='ALL';state.mode='practice';await begin({section:'ALL',onlyMistakes:true}); }
+
+  document.addEventListener('change',function(e){
+    const field=e.target.getAttribute('data-change');
+    if(!field)return;
+    if(field==='category')state.category=e.target.value;
+    if(field==='count')state.count=Number(e.target.value);
+    if(field==='mode')state.mode=e.target.value;
+  });
+  document.addEventListener('click',async function(e){
+    const el=e.target.closest('[data-action]');if(!el||el.disabled)return;
+    const action=el.getAttribute('data-action');
+    if(action==='nav')return toScreen(el.dataset.screen);
+    if(action==='reload')return refresh();
+    if(action==='refresh'){await refresh();notify('Data berhasil dimuat ulang.');return;}
+    if(action==='section'){state.section=el.dataset.section;state.category='ALL';render();return;}
+    if(action==='quick-practice'){state.section='ALL';state.category='ALL';state.mode='practice';return begin();}
+    if(action==='start')return begin();
+    if(action==='start-section'){state.section=el.dataset.section;state.category='ALL';return begin({section:state.section});}
+    if(action==='exit-quiz')return toScreen('home');
+    if(action==='choose'){
+      const q=state.quiz.questions[state.index];
+      if(state.feedback[q.id])return;
+      state.answers[q.id]=el.dataset.choice;render();return;
+    }
+    if(action==='check')return check();
+    if(action==='next'){state.index=Math.min(state.quiz.questions.length-1,state.index+1);render();scrollTop();return;}
+    if(action==='prev'){state.index=Math.max(0,state.index-1);render();scrollTop();return;}
+    if(action==='finish')return finishQuiz(false);
+    if(action==='open-review'){state.screen='review';state.showAllReview=false;render();scrollTop();return;}
+    if(action==='back-results'){state.screen='results';render();scrollTop();return;}
+    if(action==='review-filter'){state.showAllReview=el.dataset.value==='all';render();return;}
+    if(action==='retry-wrong')return retryWrong();
+  });
+
+  window.addEventListener('beforeunload',function(){stopTimer();});
+  refresh();
+})();
+</script>

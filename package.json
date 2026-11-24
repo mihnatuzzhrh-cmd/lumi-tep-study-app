@@ -1,0 +1,16 @@
+{
+  "name": "lumi-tep-study-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LUMI — mobile-first TEP UNESA practice web app powered by Google Apps Script and Google Sheets",
+  "scripts": {
+    "check": "node --check < Code.gs && node tests/check-html.js && node tests/server.test.js",
+    "login": "clasp login",
+    "status": "clasp status",
+    "push": "clasp push",
+    "open": "clasp open"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.4.1"
+  }
+}

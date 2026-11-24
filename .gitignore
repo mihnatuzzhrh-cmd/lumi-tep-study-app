@@ -1,0 +1,10 @@
+# Never commit local Apps Script credentials or real project identifiers
+.clasp.json
+.clasprc.json
+.clasprc.json.*
+.env
+.env.*
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
